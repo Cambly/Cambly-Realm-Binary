@@ -70,6 +70,27 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Build release notes
+        id: notes
+        env:
+          VERSION: ${{ inputs.version }}
+          CHECKSUMS: ${{ steps.shas.outputs.checksums }}
+        run: |
+          {
+            echo "body<<NOTES_EOF"
+            echo "Defensive mirror of upstream [realm-swift v${VERSION}](https://github.com/realm/realm-swift/releases/tag/v${VERSION}) release assets. Bytes are identical — sha256 unchanged from upstream."
+            echo ""
+            echo "Upstream URL pattern: github.com/realm/realm-swift/releases/download/v${VERSION}/&lt;asset&gt;"
+            echo "Mirror URL pattern:   github.com/Cambly/Cambly-Realm-Binary/releases/download/v${VERSION}/&lt;asset&gt;"
+            echo ""
+            echo "### Mirrored assets (sha256)"
+            echo ""
+            echo "<pre>"
+            echo "${CHECKSUMS}"
+            echo "</pre>"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub release with mirrored assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -77,15 +98,4 @@ jobs:
           gh release create "v${{ inputs.version }}" \
             assets/*.zip \
             --title "v${{ inputs.version }}" \
-            --notes "$(cat <<NOTES
-Defensive mirror of upstream [realm-swift v${{ inputs.version }}](https://github.com/realm/realm-swift/releases/tag/v${{ inputs.version }}) release assets. Bytes are identical — sha256 unchanged from upstream.
-
-Upstream URL pattern: \`https://github.com/realm/realm-swift/releases/download/v${{ inputs.version }}/<asset>\`
-Mirror URL pattern:  \`https://github.com/Cambly/Cambly-Realm-Binary/releases/download/v${{ inputs.version }}/<asset>\`
-
-### Mirrored assets (sha256)
-\`\`\`
-${{ steps.shas.outputs.checksums }}
-\`\`\`
-NOTES
-)"
+            --notes "${{ steps.notes.outputs.body }}"
