@@ -35,7 +35,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - name: Resolve realm-swift version and release tag
         id: resolve
