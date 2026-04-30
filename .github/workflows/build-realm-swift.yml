@@ -107,6 +107,17 @@ jobs:
 
       - name: Build RealmSwift xcframework
         working-directory: src
+        env:
+          # build.sh hardcodes DERIVED_DATA="$GITHUB_WORKSPACE/build/DerivedData"
+          # whenever GITHUB_WORKSPACE is set, but the build itself uses a relative
+          # -IDECustomDerivedDataLocation=build/DerivedData and so writes to
+          # $(pwd)/build/DerivedData. Upstream's CI hides this because they
+          # checkout to $GITHUB_WORKSPACE directly. We clone realm-swift into
+          # src/, so we have to point GITHUB_WORKSPACE at src/ for the script's
+          # path math to line up with where xcodebuild actually wrote products.
+          # Without this, xcodebuild -create-xcframework looks one directory too
+          # high and fails with "the path does not point to a valid framework".
+          GITHUB_WORKSPACE: ${{ github.workspace }}/src
         run: |
           set -euo pipefail
           # `build.sh xcframework` builds Realm + RealmSwift for all platforms
