@@ -107,27 +107,33 @@ jobs:
 
       - name: Build RealmSwift xcframework
         working-directory: src
-        env:
-          # build.sh hardcodes DERIVED_DATA="$GITHUB_WORKSPACE/build/DerivedData"
-          # whenever GITHUB_WORKSPACE is set, but the build itself uses a relative
-          # -IDECustomDerivedDataLocation=build/DerivedData and so writes to
-          # $(pwd)/build/DerivedData. Upstream's CI hides this because they
-          # checkout to $GITHUB_WORKSPACE directly. We clone realm-swift into
-          # src/, so we have to point GITHUB_WORKSPACE at src/ for the script's
-          # path math to line up with where xcodebuild actually wrote products.
-          # Without this, xcodebuild -create-xcframework looks one directory too
-          # high and fails with "the path does not point to a valid framework".
-          GITHUB_WORKSPACE: ${{ github.workspace }}/src
         run: |
           set -euo pipefail
+          # build.sh sets DERIVED_DATA="$GITHUB_WORKSPACE/build/DerivedData"
+          # whenever GITHUB_WORKSPACE is non-empty, but the build itself uses a
+          # relative -IDECustomDerivedDataLocation=build/DerivedData and so
+          # writes products to $(pwd)/build/DerivedData. Upstream's CI hides
+          # this because they actions/checkout realm-swift directly into
+          # $GITHUB_WORKSPACE — pwd and GITHUB_WORKSPACE end up as the same
+          # path. We clone into src/, so the two paths diverge and
+          # xcodebuild -create-xcframework looks one directory too high
+          # ("the path does not point to a valid framework").
+          #
+          # Setting GITHUB_WORKSPACE via the step's env: doesn't help: GHA's
+          # runner re-injects its own value for GITHUB_* vars when spawning
+          # subprocesses, so xcodebuild ends up with the original path even
+          # if the outer shell sees the override. `unset` at the shell level
+          # propagates correctly — sub-shells don't inherit unset vars — so
+          # build.sh falls into its else-branch and computes DERIVED_DATA
+          # from $(pwd), which matches where xcodebuild wrote products.
+          unset GITHUB_WORKSPACE
+
           # `build.sh xcframework` builds Realm + RealmSwift for all platforms
           # (default: osx ios watchos tvos catalyst visionos) with the active
           # toolchain, then runs xcodebuild -create-xcframework to combine the
           # per-platform .frameworks. Output:
           #   build/Release/Realm.xcframework
           #   build/Release/RealmSwift.xcframework
-          # The .swiftmodule files inside RealmSwift report the Swift compiler
-          # build of the active Xcode, which is the whole point of this rebuild.
           sh build.sh xcframework
 
       - name: Verify RealmSwift was built and capture compiler build
