@@ -97,5 +97,6 @@ jobs:
         run: |
           gh release create "v${{ inputs.version }}" \
             assets/*.zip \
+            --repo "${{ github.repository }}" \
             --title "v${{ inputs.version }}" \
             --notes "${{ steps.notes.outputs.body }}"
