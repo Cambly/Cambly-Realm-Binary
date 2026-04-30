@@ -13,22 +13,20 @@ name: Build RealmSwift xcframework
 # accompanying `Realm.spm.zip` (Objective-C core) is unchanged across Xcode
 # versions and continues to be sourced from the mirror workflow.
 #
+# The realm-swift source version is auto-resolved to the latest mirror
+# release in this repo (tag shape vMAJOR.MINOR.PATCH, no suffix), so the
+# produced slice always pairs with an already-mirrored Realm.spm.zip of
+# the same upstream version. Run mirror-and-release.yml first if no such
+# release exists yet. The published tag is `v<realm>-xcode<xcode>`.
+#
 # After running, update LocalPackages/RealmBinary/realm-binaries.json in
 # Cambly-Swift with the produced URL + sha256 for the matching xcode key.
 
 on:
   workflow_dispatch:
     inputs:
-      realm_swift_version:
-        description: "Upstream realm-swift tag to build (without v prefix, e.g. 20.0.4)"
-        required: true
-        type: string
       xcode_version:
         description: "Full Xcode version to build against (e.g. 26.4.1)"
-        required: true
-        type: string
-      release_tag:
-        description: 'Tag to publish under (e.g. "v20.0.4-cambly1"). Created if missing.'
         required: true
         type: string
 
@@ -39,6 +37,33 @@ jobs:
   build:
     runs-on: macos-15
     steps:
+      - name: Resolve realm-swift version and release tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Source version = latest mirror release in this repo (tag shape
+          # vMAJOR.MINOR.PATCH, no suffix). Anchoring to the mirror — not
+          # upstream `latest` — guarantees the produced RealmSwift slice
+          # pairs with an already-mirrored Realm.spm.zip of the same version.
+          realm_ver=$(gh release list --repo "${{ github.repository }}" \
+              --limit 50 --json tagName \
+              -q '.[] | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) | .tagName' \
+            | head -n 1 | sed 's/^v//')
+          if [[ -z "$realm_ver" ]]; then
+            echo "❌ No mirror release (tag shape vMAJOR.MINOR.PATCH) found in this repo."
+            echo "   Run mirror-and-release.yml first to publish the upstream-mirrored"
+            echo "   Realm.spm.zip + RealmSwift zips for the realm-swift version you"
+            echo "   want to build against."
+            exit 1
+          fi
+          tag="v${realm_ver}-xcode${{ inputs.xcode_version }}"
+          echo "realm_ver=${realm_ver}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${tag}"   >> "$GITHUB_OUTPUT"
+          echo "Building realm-swift v${realm_ver} against Xcode ${{ inputs.xcode_version }}"
+          echo "Will publish under release tag: ${tag}"
+
       - name: Select Xcode ${{ inputs.xcode_version }}
         run: |
           set -euo pipefail
@@ -61,10 +86,10 @@ jobs:
           xcodebuild -version
           xcrun swift --version
 
-      - name: Clone realm/realm-swift @ v${{ inputs.realm_swift_version }}
+      - name: Clone realm/realm-swift @ v${{ steps.resolve.outputs.realm_ver }}
         run: |
           set -euo pipefail
-          git clone --depth 1 --branch "v${{ inputs.realm_swift_version }}" \
+          git clone --depth 1 --branch "v${{ steps.resolve.outputs.realm_ver }}" \
             --recurse-submodules --shallow-submodules \
             https://github.com/realm/realm-swift.git src
 
@@ -139,7 +164,7 @@ jobs:
       - name: Build release notes
         id: notes
         env:
-          REALM_VER: ${{ inputs.realm_swift_version }}
+          REALM_VER: ${{ steps.resolve.outputs.realm_ver }}
           XCODE_VER: ${{ inputs.xcode_version }}
           CHECKSUMS: ${{ steps.shas.outputs.checksums }}
         run: |
@@ -164,7 +189,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="${{ inputs.release_tag }}"
+          tag="${{ steps.resolve.outputs.release_tag }}"
           if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             gh release upload "$tag" "$RUNNER_TEMP/assets"/*.zip \
               --repo "${{ github.repository }}" --clobber
