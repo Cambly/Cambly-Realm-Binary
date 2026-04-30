@@ -1,0 +1,91 @@
+name: Mirror Realm release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Upstream realm-swift version tag without v prefix (e.g. 20.0.4)"
+        required: true
+        type: string
+      xcode_versions:
+        description: "Comma-separated Xcode minor versions to mirror (e.g. 26.1,26.2,26.3,26.4)"
+        required: true
+        default: "26.1,26.2,26.3,26.4"
+        type: string
+
+permissions:
+  contents: write  # create release + push tag
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest  # no Xcode needed; just curl + gh
+    steps:
+      - name: Download upstream Realm.spm.zip + per-Xcode RealmSwift zips
+        env:
+          UPSTREAM: "https://github.com/realm/realm-swift/releases/download/v${{ inputs.version }}"
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          # Shared ObjC core (one zip across all Xcode versions)
+          echo "⬇️  Realm.spm.zip"
+          curl -L --fail --silent --show-error \
+            -o assets/Realm.spm.zip "$UPSTREAM/Realm.spm.zip"
+
+          # Per-Xcode RealmSwift zips
+          IFS=',' read -ra XCODES <<< "${{ inputs.xcode_versions }}"
+          for x in "${XCODES[@]}"; do
+            x_trimmed=$(echo "$x" | xargs)  # trim whitespace
+            echo "⬇️  RealmSwift@${x_trimmed}.spm.zip"
+            curl -L --fail --silent --show-error \
+              -o "assets/RealmSwift@${x_trimmed}.spm.zip" \
+              "$UPSTREAM/RealmSwift@${x_trimmed}.spm.zip"
+          done
+
+          echo ""
+          echo "Downloaded:"
+          ls -la assets/
+
+      - name: Verify each asset is non-empty
+        run: |
+          set -euo pipefail
+          for f in assets/*.zip; do
+            size=$(stat -c%s "$f")
+            if [[ "$size" -lt 1000000 ]]; then  # < 1MB is suspicious
+              echo "❌ $f looks too small: $size bytes"
+              exit 1
+            fi
+            echo "✓ $f ($((size/1024/1024)) MB)"
+          done
+
+      - name: Compute checksums (for the release notes)
+        id: shas
+        run: |
+          {
+            echo "checksums<<EOF"
+            for f in assets/*.zip; do
+              sha=$(sha256sum "$f" | awk '{print $1}')
+              name=$(basename "$f")
+              printf "  %s  %s\n" "$sha" "$name"
+            done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release with mirrored assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ inputs.version }}" \
+            assets/*.zip \
+            --title "v${{ inputs.version }}" \
+            --notes "$(cat <<NOTES
+Defensive mirror of upstream [realm-swift v${{ inputs.version }}](https://github.com/realm/realm-swift/releases/tag/v${{ inputs.version }}) release assets. Bytes are identical — sha256 unchanged from upstream.
+
+Upstream URL pattern: \`https://github.com/realm/realm-swift/releases/download/v${{ inputs.version }}/<asset>\`
+Mirror URL pattern:  \`https://github.com/Cambly/Cambly-Realm-Binary/releases/download/v${{ inputs.version }}/<asset>\`
+
+### Mirrored assets (sha256)
+\`\`\`
+${{ steps.shas.outputs.checksums }}
+\`\`\`
+NOTES
+)"
