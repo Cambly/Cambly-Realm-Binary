@@ -93,25 +93,40 @@ jobs:
             --recurse-submodules --shallow-submodules \
             https://github.com/realm/realm-swift.git src
 
+      - name: Download Apple platform SDKs
+        working-directory: src
+        run: |
+          set -euo pipefail
+          # Upstream's xcframework target builds for all platforms (osx, ios,
+          # watchos, tvos, catalyst, visionos). Some SDKs (visionOS, watchOS)
+          # aren't preinstalled on the runner image and need to be fetched.
+          # `simctl list` first to wait out any in-progress simulator setup
+          # that would otherwise race with -downloadAllPlatforms.
+          xcrun simctl list > /dev/null || true
+          xcodebuild -downloadAllPlatforms
+
       - name: Build RealmSwift xcframework
         working-directory: src
         run: |
           set -euo pipefail
-          # Upstream's release pipeline target. Produces:
-          #   build/Realm.xcframework
-          #   build/RealmSwift.xcframework
-          # Both compiled with the active toolchain, so the .swiftmodule files
-          # inside RealmSwift report the matching Swift compiler build number.
-          sh build.sh release-package-build-platform
+          # `build.sh xcframework` builds Realm + RealmSwift for all platforms
+          # (default: osx ios watchos tvos catalyst visionos) with the active
+          # toolchain, then runs xcodebuild -create-xcframework to combine the
+          # per-platform .frameworks. Output:
+          #   build/Release/Realm.xcframework
+          #   build/Release/RealmSwift.xcframework
+          # The .swiftmodule files inside RealmSwift report the Swift compiler
+          # build of the active Xcode, which is the whole point of this rebuild.
+          sh build.sh xcframework
 
       - name: Verify RealmSwift was built and capture compiler build
         working-directory: src
         run: |
           set -euo pipefail
-          xcframework="build/RealmSwift.xcframework"
+          xcframework="build/Release/RealmSwift.xcframework"
           if [[ ! -d "$xcframework" ]]; then
             echo "❌ Expected $xcframework but it does not exist. Listing build/:"
-            ls -la build/ || true
+            ls -laR build/ || true
             exit 1
           fi
           # Pick any .swiftmodule and dump its compiler-version string so the
@@ -127,7 +142,7 @@ jobs:
           strings "$mod" | grep -E "Apple Swift version" | head -n 3 || true
 
       - name: Zip RealmSwift.xcframework as RealmSwift@<xcode>.spm.zip
-        working-directory: src/build
+        working-directory: src/build/Release
         run: |
           set -euo pipefail
           # Use the Xcode major.minor as the slice key (same convention as
