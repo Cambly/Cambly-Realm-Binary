@@ -19,16 +19,22 @@ name: Build RealmSwift xcframework
 # the same upstream version. Run mirror-and-release.yml first if no such
 # release exists yet. The published tag is `v<realm>-xcode<xcode>`.
 #
+# The Xcode version is auto-detected from the runner image's active
+# toolchain — we don't ask the caller for it. The macos-26 image ships
+# exactly one default Xcode (see actions/runner-images for the current
+# build), and any version we'd pass in would have to match that anyway:
+# .swiftmodule files do not link across Swift compiler builds, and Apple
+# bumps the compiler build between point releases of the same major.minor
+# (e.g. 26.4 GA ships swiftlang-6.3.0.123.5, 26.4.1 ships
+# swiftlang-6.3.1.1.2). To produce a slice for a different toolchain,
+# bump the runner image (or pin to a different macos-NN runner) — the
+# xcframework will key off whatever Xcode that image actually has.
+#
 # After running, update LocalPackages/RealmBinary/realm-binaries.json in
 # Cambly-Swift with the produced URL + sha256 for the matching xcode key.
 
 on:
   workflow_dispatch:
-    inputs:
-      xcode_version:
-        description: "Full Xcode version to build against (e.g. 26.4.1)"
-        required: true
-        type: string
 
 permissions:
   contents: write  # create release + push tag
@@ -37,7 +43,7 @@ jobs:
   build:
     runs-on: macos-26
     steps:
-      - name: Resolve realm-swift version and release tag
+      - name: Resolve realm-swift version
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
@@ -58,33 +64,30 @@ jobs:
             echo "   want to build against."
             exit 1
           fi
-          tag="v${realm_ver}-xcode${{ inputs.xcode_version }}"
           echo "realm_ver=${realm_ver}" >> "$GITHUB_OUTPUT"
-          echo "release_tag=${tag}"   >> "$GITHUB_OUTPUT"
-          echo "Building realm-swift v${realm_ver} against Xcode ${{ inputs.xcode_version }}"
-          echo "Will publish under release tag: ${tag}"
+          echo "Building realm-swift v${realm_ver}"
 
-      - name: Select Xcode ${{ inputs.xcode_version }}
+      - name: Detect active Xcode version
+        id: xcode
         run: |
           set -euo pipefail
-          # Prefer an exact match from the available Xcode app bundles; xcversion
-          # is no longer maintained on the GHA images, so we set DEVELOPER_DIR
-          # directly. Image-installed apps live under /Applications/Xcode_*.app.
-          want="${{ inputs.xcode_version }}"
-          candidate="/Applications/Xcode_${want}.app"
-          if [[ ! -d "$candidate" ]]; then
-            echo "❌ Xcode ${want} not preinstalled on this runner."
-            echo "   Available:"
-            ls -d /Applications/Xcode_*.app 2>/dev/null || true
-            echo ""
-            echo "   If the runner image lags Apple's release, either wait for"
-            echo "   the GHA image to update, or extend this workflow to download"
-            echo "   the Xcode .xip from Apple Developer (auth required)."
+          # Trust the runner image's active toolchain rather than asking the
+          # caller for a version. xcodebuild -version is authoritative — the
+          # image's /Applications/Xcode_<major.minor>.app symlinks lie about
+          # the patch (e.g. Xcode_26.4.app -> Xcode_26.4.1.app), and the patch
+          # is exactly what matters: Apple bumps the Swift compiler build
+          # between point releases of the same major.minor. xcodebuild's
+          # first line is "Xcode <version>".
+          xcode_ver=$(xcodebuild -version | head -n 1 | awk '{print $2}')
+          if [[ -z "$xcode_ver" ]]; then
+            echo "❌ Could not parse Xcode version from xcodebuild -version:"
+            xcodebuild -version
             exit 1
           fi
-          sudo xcode-select -s "$candidate/Contents/Developer"
+          echo "Active Xcode: ${xcode_ver}"
           xcodebuild -version
           xcrun swift --version
+          echo "xcode_ver=${xcode_ver}" >> "$GITHUB_OUTPUT"
 
       - name: Clone realm/realm-swift @ v${{ steps.resolve.outputs.realm_ver }}
         run: |
@@ -162,21 +165,18 @@ jobs:
         working-directory: src/build/Release
         run: |
           set -euo pipefail
-          # Use the Xcode major.minor as the slice key (same convention as
-          # upstream and as Cambly-Swift's render_realm_wrapper.sh, which
-          # extracts only major.minor from xcodebuild -version).
-          XCODE_MAJ_MIN=$(awk -F. '{print $1"."$2}' <<<"${{ inputs.xcode_version }}")
-          XCODE_FULL="${{ inputs.xcode_version }}"
+          # Slice key is the FULL Xcode version (major.minor.patch). Apple
+          # bumps the Swift compiler build between point releases of the same
+          # major.minor — e.g. 26.4 GA (build 17E192) ships
+          # swiftlang-6.3.0.123.5, while 26.4.1 (build 17E202) ships
+          # swiftlang-6.3.1.1.2 — and .swiftmodule files do not link across
+          # compiler builds. Pinning the zip name to the full version makes
+          # it unambiguous which toolchain produced the slice. Don't trust
+          # the GHA runner image's symlinks (e.g. macos-26 has
+          # /Applications/Xcode_26.4.app symlinked to Xcode_26.4.1.app).
           OUT_DIR="$RUNNER_TEMP/assets"
           mkdir -p "$OUT_DIR"
-
-          # major.minor zip (consumed by current render_realm_wrapper.sh)
-          zip -qry "$OUT_DIR/RealmSwift@${XCODE_MAJ_MIN}.spm.zip" RealmSwift.xcframework
-          # major.minor.patch zip (consumed if json carries a patch-specific key)
-          if [[ "$XCODE_FULL" != "$XCODE_MAJ_MIN" ]]; then
-            cp "$OUT_DIR/RealmSwift@${XCODE_MAJ_MIN}.spm.zip" \
-               "$OUT_DIR/RealmSwift@${XCODE_FULL}.spm.zip"
-          fi
+          zip -qry "$OUT_DIR/RealmSwift@${{ steps.xcode.outputs.xcode_ver }}.spm.zip" RealmSwift.xcframework
           ls -la "$OUT_DIR"
 
       - name: Compute sha256 checksums
@@ -197,7 +197,7 @@ jobs:
         id: notes
         env:
           REALM_VER: ${{ steps.resolve.outputs.realm_ver }}
-          XCODE_VER: ${{ inputs.xcode_version }}
+          XCODE_VER: ${{ steps.xcode.outputs.xcode_ver }}
           CHECKSUMS: ${{ steps.shas.outputs.checksums }}
         run: |
           set -euo pipefail
@@ -229,7 +229,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="${{ steps.resolve.outputs.release_tag }}"
+          tag="v${{ steps.resolve.outputs.realm_ver }}-xcode${{ steps.xcode.outputs.xcode_ver }}"
           if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             gh release upload "$tag" "$RUNNER_TEMP/assets"/*.zip \
               --repo "${{ github.repository }}" --clobber
