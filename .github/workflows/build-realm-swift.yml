@@ -78,14 +78,21 @@ jobs:
           # is exactly what matters: Apple bumps the Swift compiler build
           # between point releases of the same major.minor. xcodebuild's
           # first line is "Xcode <version>".
-          xcode_ver=$(xcodebuild -version | head -n 1 | awk '{print $2}')
+          #
+          # Capture the full output before parsing instead of piping through
+          # `head`. xcodebuild writes via NSFileHandle which raises an
+          # uncaught NSFileHandleOperationException ("Broken pipe", exit 134)
+          # if the consumer closes the pipe before it's done — and `head -n 1`
+          # does exactly that.
+          xcode_output=$(xcodebuild -version)
+          xcode_ver=$(awk 'NR==1 {print $2}' <<<"$xcode_output")
           if [[ -z "$xcode_ver" ]]; then
             echo "❌ Could not parse Xcode version from xcodebuild -version:"
-            xcodebuild -version
+            echo "$xcode_output"
             exit 1
           fi
           echo "Active Xcode: ${xcode_ver}"
-          xcodebuild -version
+          echo "$xcode_output"
           xcrun swift --version
           echo "xcode_ver=${xcode_ver}" >> "$GITHUB_OUTPUT"
 
