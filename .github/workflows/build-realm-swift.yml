@@ -200,8 +200,16 @@ jobs:
           XCODE_VER: ${{ inputs.xcode_version }}
           CHECKSUMS: ${{ steps.shas.outputs.checksums }}
         run: |
+          set -euo pipefail
+          # Write the body to a file rather than $GITHUB_OUTPUT. The body
+          # contains markdown backticks; if we round-trip it through
+          # ${{ steps.notes.outputs.body }} into a later `gh release create
+          # --notes "..."`, GHA template-substitutes first and bash then
+          # parses the literal backticks as command substitution
+          # (`Realm.spm.zip` → "command not found"). --notes-file reads the
+          # body from disk so the bytes never traverse a shell command line.
+          notes_file="$RUNNER_TEMP/release-notes.md"
           {
-            echo "body<<NOTES_EOF"
             echo "Cambly-built RealmSwift xcframework for Xcode ${XCODE_VER}, source: [realm-swift v${REALM_VER}](https://github.com/realm/realm-swift/releases/tag/v${REALM_VER})."
             echo ""
             echo "Built from upstream source against the Xcode ${XCODE_VER} GA toolchain — the .swiftmodule files inside the xcframework match the consumer's Swift compiler build, fixing the \"Compiled module was created by a different version of the compiler\" error that the upstream-prebuilt slice produces on GA toolchains."
@@ -213,8 +221,8 @@ jobs:
             echo "<pre>"
             echo "${CHECKSUMS}"
             echo "</pre>"
-            echo "NOTES_EOF"
-          } >> "$GITHUB_OUTPUT"
+          } > "$notes_file"
+          echo "notes_file=${notes_file}" >> "$GITHUB_OUTPUT"
 
       - name: Create / update GitHub release
         env:
@@ -229,5 +237,5 @@ jobs:
             gh release create "$tag" "$RUNNER_TEMP/assets"/*.zip \
               --repo "${{ github.repository }}" \
               --title "$tag" \
-              --notes "${{ steps.notes.outputs.body }}"
+              --notes-file "${{ steps.notes.outputs.notes_file }}"
           fi
