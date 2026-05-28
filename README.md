@@ -56,10 +56,14 @@ If `realm-swift` adds a new Xcode-version asset (e.g. `RealmSwift@26.5.spm.zip`)
 `build-realm-swift.yml` runs on GitHub's `macos-NN` images, which lag behind Apple's Xcode GA releases by days or weeks. When you need a slice keyed to a newer Xcode immediately (e.g. you upgraded to Xcode 27.0 GA on your laptop and `macos-26` still has 26.4.1), use `scripts/build-realm-swift-local.sh`:
 
 ```bash
-# Produce a signed zip locally (no upload):
+# Build against the currently-active Xcode (auto-detected via xcodebuild -version):
 ./scripts/build-realm-swift-local.sh
 
-# Build + publish as v20.0.4-xcode27.0-signed (or whatever your local Xcode is):
+# Explicit --xcode-version + publish as v20.0.4-xcode26.5-signed (script
+# verifies the active Xcode matches and fails with switch instructions if not):
+./scripts/build-realm-swift-local.sh --xcode-version 26.5 --tag-suffix -signed --upload
+
+# Build + publish without specifying Xcode (uses whatever's active):
 ./scripts/build-realm-swift-local.sh --tag-suffix -signed --upload
 
 # Override realm-swift version:
@@ -70,6 +74,8 @@ If `realm-swift` adds a new Xcode-version asset (e.g. `RealmSwift@26.5.spm.zip`)
 ```
 
 The script mirrors `build-realm-swift.yml`'s logic — clones realm/realm-swift, builds the xcframework via upstream's `build.sh xcframework`, signs with your local Apple Distribution identity (auto-detected from keychain), zips, and prints a copy-pasteable JSON snippet for `realm-binaries.json`. Pass `--upload` to also create the GitHub release.
+
+`--xcode-version` is optional — if passed, the script verifies the active Xcode matches (it won't `sudo xcode-select` for you; switch toolchains is an explicit human action). If omitted, the script uses whatever `xcodebuild -version` reports.
 
 Prerequisites:
 - The `Apple Distribution: Cambly Inc.` cert in your keychain (run fastlane match against `Cambly-Swift-Signing` if missing).

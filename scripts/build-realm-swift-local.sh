@@ -43,6 +43,7 @@ ARTIFACTS_DIR="$BUILD_DIR/artifacts"
 SRC_DIR="$BUILD_DIR/realm-swift-src"
 
 REALM_VERSION=""
+XCODE_VERSION=""
 TAG_SUFFIX=""
 SIGNING_IDENTITY=""
 UPLOAD=false
@@ -60,6 +61,14 @@ OPTIONS
   --realm-version <ver>     realm-swift tag to clone (default: latest mirror
                             release in this repo, e.g. 20.0.4). Pass without
                             the "v" prefix.
+  --xcode-version <ver>     Xcode version to build against. Default: auto-
+                            detect via \`xcodebuild -version\`. If passed,
+                            the script verifies the active Xcode matches
+                            and fails with switch instructions otherwise
+                            (we don't \`xcode-select\` for you). Use the
+                            exact form \`xcodebuild -version\` would emit
+                            (typically "26.5" not "26.5.0"; "26.4.1" with
+                            patch).
   --signing-identity <name> Apple Distribution cert common name. Default:
                             auto-detect first "Apple Distribution: Cambly Inc."
                             in your keychain.
@@ -75,20 +84,26 @@ OPTIONS
   -h, --help                Show this help.
 
 EXAMPLES
-  # Just produce a signed zip + sha (no upload):
+  # Just produce a signed zip + sha against whatever Xcode is currently
+  # active (no upload):
   $0
 
-  # Produce + publish as v20.0.4-xcode26.4.1-signed:
-  $0 --tag-suffix -signed --upload
+  # Build against a specific Xcode (must be the one xcode-select points
+  # at; the script verifies and fails fast otherwise):
+  $0 --xcode-version 27.0 --tag-suffix -signed --upload
+
+  # Produce + publish as v20.0.4-xcode26.5-signed:
+  $0 --xcode-version 26.5 --tag-suffix -signed --upload
 
   # Override the realm-swift version:
-  $0 --realm-version 20.1.0 --tag-suffix -signed --upload
+  $0 --realm-version 20.1.0 --xcode-version 26.5 --tag-suffix -signed --upload
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --realm-version)     REALM_VERSION="$2"; shift 2 ;;
+    --xcode-version)     XCODE_VERSION="$2"; shift 2 ;;
     --signing-identity)  SIGNING_IDENTITY="$2"; shift 2 ;;
     --tag-suffix)        TAG_SUFFIX="$2"; shift 2 ;;
     --upload)            UPLOAD=true; shift ;;
@@ -151,21 +166,42 @@ else
   green "Using realm-swift v$REALM_VERSION (explicit)"
 fi
 
-# ─── Detect active Xcode version ────────────────────────────────────────────
+# ─── Resolve Xcode version ──────────────────────────────────────────────────
 
-step "Detecting active Xcode"
+step "Resolving Xcode version"
 # Capture full output before parsing — xcodebuild writes via NSFileHandle and
 # `head -n 1` can SIGPIPE-crash it (exit 134). Mirrors the workflow's logic.
 XCODE_OUTPUT=$(xcodebuild -version)
-XCODE_VERSION=$(awk 'NR==1 {print $2}' <<<"$XCODE_OUTPUT")
-if [[ -z "$XCODE_VERSION" ]]; then
+ACTIVE_XCODE=$(awk 'NR==1 {print $2}' <<<"$XCODE_OUTPUT")
+if [[ -z "$ACTIVE_XCODE" ]]; then
   red "Could not parse Xcode version from \`xcodebuild -version\`:"
   echo "$XCODE_OUTPUT"
   exit 1
 fi
-echo "$XCODE_OUTPUT"
+
+if [[ -z "$XCODE_VERSION" ]]; then
+  # No --xcode-version flag — trust whatever is currently selected.
+  XCODE_VERSION="$ACTIVE_XCODE"
+  echo "$XCODE_OUTPUT"
+  green "Auto-detected active Xcode: $XCODE_VERSION (will produce RealmSwift@$XCODE_VERSION.spm.zip)"
+else
+  # --xcode-version was passed — verify the active Xcode matches. We
+  # deliberately don't `sudo xcode-select -s` for the user; switching the
+  # system-default toolchain is a footgun and should be an explicit human
+  # action.
+  if [[ "$ACTIVE_XCODE" != "$XCODE_VERSION" ]]; then
+    red "Active Xcode is $ACTIVE_XCODE but --xcode-version asked for $XCODE_VERSION."
+    red ""
+    red "Switch toolchain first, then re-run:"
+    red "  sudo xcode-select -s /Applications/Xcode_${XCODE_VERSION}.app"
+    red ""
+    red "(Or pass --xcode-version $ACTIVE_XCODE to match what's currently active.)"
+    exit 1
+  fi
+  echo "$XCODE_OUTPUT"
+  green "Verified active Xcode matches requested $XCODE_VERSION"
+fi
 xcrun swift --version || true
-green "Active Xcode: $XCODE_VERSION (will produce RealmSwift@$XCODE_VERSION.spm.zip)"
 
 # ─── Resolve signing identity ───────────────────────────────────────────────
 
