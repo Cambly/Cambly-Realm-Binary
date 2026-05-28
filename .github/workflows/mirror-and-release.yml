@@ -8,10 +8,15 @@ on:
         required: true
         type: string
       xcode_versions:
-        description: "Comma-separated Xcode minor versions to mirror (e.g. 26.1,26.2,26.3,26.4)"
+        description: "Comma-separated Xcode minor versions to mirror (e.g. 26.1,26.2,26.3,26.4). One published release per entry — these are the SLICES being mirrored, not the host Xcode."
         required: true
         default: "26.1,26.2,26.3,26.4"
         type: string
+      host_xcode_version:
+        description: "Xcode version selected on the runner via setup-xcode (drives codesign + CLT behavior). Pinned to avoid silent drift when GitHub bumps the macos-26 image's default Xcode. Default 26.4.1."
+        required: true
+        type: string
+        default: "26.4.1"
       tag_suffix:
         description: "Optional suffix appended to each release tag, e.g. -signed or -r2. Used when republishing the same upstream version (e.g. adding the Apple Distribution SDK signature). Leave empty for the first release of a given upstream version."
         required: false
@@ -33,6 +38,29 @@ jobs:
     steps:
       - name: Checkout binary repo (this)
         uses: actions/checkout@v4
+
+      # Pin the host Xcode so codesign + Command Line Tools behavior is
+      # reproducible regardless of which Xcode the runner image's `xcode-
+      # select -p` happens to point at. The mirror workflow doesn't compile
+      # anything, but it does run codesign — defense-in-depth against
+      # behavior changes between Xcode-bundled CLT versions. setup-xcode
+      # fails loudly if the requested version isn't pre-installed.
+      - name: Pin host Xcode to ${{ inputs.host_xcode_version }}
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ inputs.host_xcode_version }}
+
+      - name: Verify pinned Xcode
+        run: |
+          set -euo pipefail
+          xcode_output=$(xcodebuild -version)
+          actual_ver=$(awk 'NR==1 {print $2}' <<<"$xcode_output")
+          expected_ver="${{ inputs.host_xcode_version }}"
+          if [[ "$actual_ver" != "$expected_ver" ]]; then
+            echo "❌ setup-xcode landed on Xcode $actual_ver but workflow input asked for $expected_ver."
+            exit 1
+          fi
+          echo "$xcode_output"
 
       # Sets MATCH_KEYCHAIN_NAME / MATCH_KEYCHAIN_PASSWORD via $GITHUB_ENV and
       # makes fastlane_tmp_keychain the runner's default keychain, so the

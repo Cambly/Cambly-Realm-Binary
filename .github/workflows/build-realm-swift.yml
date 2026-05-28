@@ -26,16 +26,23 @@ name: Build RealmSwift xcframework
 # used" list, which includes Realm). Required repo secrets:
 # MATCH_GIT_SSH_PRIVATE_KEY, MATCH_PASSWORD, SIGNING_IDENTITY.
 #
-# The Xcode version is auto-detected from the runner image's active
-# toolchain — we don't ask the caller for it. The macos-26 image ships
-# exactly one default Xcode (see actions/runner-images for the current
-# build), and any version we'd pass in would have to match that anyway:
+# The Xcode version is pinned via the `xcode_version` workflow_dispatch
+# input (default 26.4.1) and applied with maxim-lobanov/setup-xcode.
+# Pinning prevents silent ABI drift when GitHub rolls the runner image
+# forward and changes its default Xcode (e.g. macos-26 image bumping its
+# default from 26.4.1 to 26.5). Without the pin, the same dispatch inputs
+# would produce different artifacts depending on when the workflow ran —
+# the kind of reproducibility break that produced the ITMS-91065 mess
+# elsewhere in the org. The chosen Xcode must already be installed on the
+# `runs-on` image; runner-images publishes per-image lists at
+# github.com/actions/runner-images/blob/main/images/macos/macos-NN-Readme.md.
+#
 # .swiftmodule files do not link across Swift compiler builds, and Apple
 # bumps the compiler build between point releases of the same major.minor
 # (e.g. 26.4 GA ships swiftlang-6.3.0.123.5, 26.4.1 ships
 # swiftlang-6.3.1.1.2). To produce a slice for a different toolchain,
-# bump the runner image (or pin to a different macos-NN runner) — the
-# xcframework will key off whatever Xcode that image actually has.
+# pass `xcode_version` on dispatch (assuming the version is installed on
+# the runner) or bump the `runs-on` runner image.
 #
 # After running, update LocalPackages/RealmBinary/realm-binaries.json in
 # Cambly-Swift with the produced URL + sha256 for the matching xcode key.
@@ -43,6 +50,11 @@ name: Build RealmSwift xcframework
 on:
   workflow_dispatch:
     inputs:
+      xcode_version:
+        description: "Xcode version to build against (must be pre-installed on the macos-26 runner image). Drives the produced slice's tag and asset name. Default 26.4.1 matches Cambly-Swift's .xcode-version."
+        required: true
+        type: string
+        default: "26.4.1"
       tag_suffix:
         description: "Optional suffix appended to the release tag, e.g. -signed or -r2. Used when republishing the same realm/Xcode combination (e.g. adding the Apple Distribution SDK signature). Leave empty for the first release of a given combination."
         required: false
@@ -95,34 +107,43 @@ jobs:
           echo "realm_ver=${realm_ver}" >> "$GITHUB_OUTPUT"
           echo "Building realm-swift v${realm_ver}"
 
-      - name: Detect active Xcode version
+      # Pin to the dispatched Xcode version (default 26.4.1). setup-xcode
+      # fails loudly if the requested version isn't pre-installed on the
+      # runner — that's the desired behavior: when GitHub eventually removes
+      # an Xcode from the macos-26 image, we want a hard failure here rather
+      # than a silent fallback to whatever the new default happens to be.
+      - name: Pin Xcode to ${{ inputs.xcode_version }}
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ inputs.xcode_version }}
+
+      - name: Verify pinned Xcode + capture compiler build
         id: xcode
         run: |
           set -euo pipefail
-          # Trust the runner image's active toolchain rather than asking the
-          # caller for a version. xcodebuild -version is authoritative — the
-          # image's /Applications/Xcode_<major.minor>.app symlinks lie about
-          # the patch (e.g. Xcode_26.4.app -> Xcode_26.4.1.app), and the patch
-          # is exactly what matters: Apple bumps the Swift compiler build
-          # between point releases of the same major.minor. xcodebuild's
-          # first line is "Xcode <version>".
+          # Sanity-check that setup-xcode actually selected what we asked for.
+          # The image's /Applications/Xcode_<major.minor>.app symlinks lie
+          # about the patch (e.g. Xcode_26.4.app -> Xcode_26.4.1.app), so we
+          # parse xcodebuild's first line — authoritative.
           #
           # Capture the full output before parsing instead of piping through
           # `head`. xcodebuild writes via NSFileHandle which raises an
           # uncaught NSFileHandleOperationException ("Broken pipe", exit 134)
-          # if the consumer closes the pipe before it's done — and `head -n 1`
-          # does exactly that.
+          # if the consumer closes the pipe before it's done.
           xcode_output=$(xcodebuild -version)
-          xcode_ver=$(awk 'NR==1 {print $2}' <<<"$xcode_output")
-          if [[ -z "$xcode_ver" ]]; then
-            echo "❌ Could not parse Xcode version from xcodebuild -version:"
-            echo "$xcode_output"
+          actual_ver=$(awk 'NR==1 {print $2}' <<<"$xcode_output")
+          expected_ver="${{ inputs.xcode_version }}"
+          if [[ "$actual_ver" != "$expected_ver" ]]; then
+            echo "❌ setup-xcode landed on Xcode $actual_ver but workflow input asked for $expected_ver."
+            echo "   This usually means the runner image lacks the requested version. Check"
+            echo "   github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md"
+            echo "   for the current list, and update the workflow_dispatch default if needed."
             exit 1
           fi
-          echo "Active Xcode: ${xcode_ver}"
+          echo "Pinned Xcode: $actual_ver"
           echo "$xcode_output"
           xcrun swift --version
-          echo "xcode_ver=${xcode_ver}" >> "$GITHUB_OUTPUT"
+          echo "xcode_ver=$actual_ver" >> "$GITHUB_OUTPUT"
 
       - name: Clone realm/realm-swift @ v${{ steps.resolve.outputs.realm_ver }}
         run: |

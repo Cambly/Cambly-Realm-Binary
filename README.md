@@ -51,6 +51,17 @@ The workflow:
 
 If `realm-swift` adds a new Xcode-version asset (e.g. `RealmSwift@26.5.spm.zip`), pass it via the `xcode_versions` input — no workflow edits required.
 
+### Xcode pinning
+
+Both workflows pin the runner's Xcode via [`maxim-lobanov/setup-xcode`](https://github.com/maxim-lobanov/setup-xcode) instead of trusting whatever the `macos-26` runner image's default happens to be. Inputs:
+
+| Workflow | Input | Default | Why |
+|---|---|---|---|
+| `build-realm-swift.yml` | `xcode_version` | `26.4.1` | Drives the produced slice's tag and asset name — slice ABI is keyed on the full Swift compiler build, which differs even between Xcode point releases. |
+| `mirror-and-release.yml` | `host_xcode_version` | `26.4.1` | Defense-in-depth so `codesign` + Command Line Tools behavior is reproducible across runs. Mirror doesn't compile anything, but CLT behavior can drift across Xcode versions. |
+
+When GitHub eventually removes a pinned version from the runner image, both workflows fail loudly with `Xcode <ver> not found at /Applications/Xcode_<ver>.app` — preferred to silently producing a different artifact. Check the [macos-26 runner-image readme](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md) for the current list of installed Xcodes, and bump the defaults when needed.
+
 ### Required secrets
 
 Both workflows require these repo secrets (configure under Settings → Secrets and variables → Actions):
