@@ -1,0 +1,65 @@
+name: Set up xcframework signing
+description: |
+  Prepares the runner to codesign xcframeworks with the team's Apple
+  Distribution identity. Steps performed:
+
+    1. ssh-agent loads cambly-machine-user-ios SSH key
+    2. fastlane installed
+    3. setup_circle_ci creates fastlane_tmp_keychain (empty password),
+       sets it as the runner's default keychain. Persists MATCH_KEYCHAIN_NAME
+       and MATCH_KEYCHAIN_PASSWORD via $GITHUB_ENV so subsequent steps
+       (including the caller workflow's build step) see them.
+    4. sync_code_signing clones encrypted Cambly-Swift-Signing repo
+       via SSH, decrypts with match-password, installs the Apple
+       Distribution cert into fastlane_tmp_keychain. Skips provisioning
+       profile lookup (xcframework signing doesn't need profiles).
+
+  After this composite action runs, `codesign --sign "$SIGNING_IDENTITY"`
+  in the caller's later steps finds the cert in fastlane_tmp_keychain
+  without UI prompt.
+
+  Mirrors the same setup used by Cambly-iOS-Vendor-Binaries (which signed
+  10 vendor xcframeworks to fix ITMS-91065 in 2026-05). MOB-290 ports this
+  to the Realm binary repo so RealmSwift.xcframework picks up the same
+  Apple Distribution signature.
+
+inputs:
+  ssh-private-key:
+    description: cambly-machine-user-ios SSH private key (from MATCH_GIT_SSH_PRIVATE_KEY secret)
+    required: true
+  match-password:
+    description: Cambly-Swift-Signing repo decryption password (from MATCH_PASSWORD secret)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up SSH agent (Cambly-Swift-Signing access)
+      uses: webfactory/ssh-agent@v0.9.0
+      with:
+        ssh-private-key: ${{ inputs.ssh-private-key }}
+
+    - name: Install fastlane
+      shell: bash
+      run: gem install fastlane --no-document
+
+    - name: setup_circle_ci (create fastlane_tmp_keychain)
+      shell: bash
+      run: |
+        fastlane run setup_circle_ci
+        echo "MATCH_KEYCHAIN_NAME=fastlane_tmp_keychain" >> "$GITHUB_ENV"
+        echo "MATCH_KEYCHAIN_PASSWORD=" >> "$GITHUB_ENV"
+
+    - name: Sync Apple Distribution cert from Cambly-Swift-Signing
+      shell: bash
+      env:
+        MATCH_PASSWORD: ${{ inputs.match-password }}
+      run: |
+        fastlane run sync_code_signing \
+          type:appstore \
+          readonly:true \
+          skip_provisioning_profiles:true \
+          git_url:"git@github.com:Cambly/Cambly-Swift-Signing.git" \
+          app_identifier:com.cambly.Cambly
+        echo "=== identities visible to codesign after match:"
+        security find-identity -v -p codesigning
