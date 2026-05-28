@@ -12,24 +12,48 @@ on:
         required: true
         default: "26.1,26.2,26.3,26.4"
         type: string
+      tag_suffix:
+        description: "Optional suffix appended to the release tag, e.g. -signed or -r2. Used when republishing the same upstream version (e.g. adding the Apple Distribution SDK signature). Leave empty for the first release of a given upstream version."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write  # create release + push tag
 
 jobs:
   mirror:
-    runs-on: ubuntu-latest  # no Xcode needed; just curl + gh
+    # macOS runner: we re-sign each xcframework with the team's Apple
+    # Distribution identity before publishing (ITMS-91065 fix — upstream's
+    # Realm.spm.zip / RealmSwift@<xcode>.spm.zip ship unsigned, and Apple now
+    # rejects TestFlight submissions that bundle unsigned third-party SDKs).
+    # codesign + the keychain dance both require macOS, so this can no longer
+    # run on ubuntu-latest.
+    runs-on: macos-26
     steps:
+      - name: Checkout binary repo (this)
+        uses: actions/checkout@v4
+
+      # Sets MATCH_KEYCHAIN_NAME / MATCH_KEYCHAIN_PASSWORD via $GITHUB_ENV and
+      # makes fastlane_tmp_keychain the runner's default keychain, so the
+      # later codesign call finds the Apple Distribution cert without any
+      # further configuration. See .github/actions/setup-signing.
+      - name: Set up signing
+        uses: ./.github/actions/setup-signing
+        with:
+          ssh-private-key: ${{ secrets.MATCH_GIT_SSH_PRIVATE_KEY }}
+          match-password: ${{ secrets.MATCH_PASSWORD }}
+
       - name: Download upstream Realm.spm.zip + per-Xcode RealmSwift zips
         env:
           UPSTREAM: "https://github.com/realm/realm-swift/releases/download/v${{ inputs.version }}"
         run: |
           set -euo pipefail
-          mkdir -p assets
+          mkdir -p downloads
           # Shared ObjC core (one zip across all Xcode versions)
           echo "⬇️  Realm.spm.zip"
           curl -L --fail --silent --show-error \
-            -o assets/Realm.spm.zip "$UPSTREAM/Realm.spm.zip"
+            -o downloads/Realm.spm.zip "$UPSTREAM/Realm.spm.zip"
 
           # Per-Xcode RealmSwift zips
           IFS=',' read -ra XCODES <<< "${{ inputs.xcode_versions }}"
@@ -37,19 +61,19 @@ jobs:
             x_trimmed=$(echo "$x" | xargs)  # trim whitespace
             echo "⬇️  RealmSwift@${x_trimmed}.spm.zip"
             curl -L --fail --silent --show-error \
-              -o "assets/RealmSwift@${x_trimmed}.spm.zip" \
+              -o "downloads/RealmSwift@${x_trimmed}.spm.zip" \
               "$UPSTREAM/RealmSwift@${x_trimmed}.spm.zip"
           done
 
           echo ""
           echo "Downloaded:"
-          ls -la assets/
+          ls -la downloads/
 
-      - name: Verify each asset is non-empty
+      - name: Verify each download is non-empty
         run: |
           set -euo pipefail
-          for f in assets/*.zip; do
-            size=$(stat -c%s "$f")
+          for f in downloads/*.zip; do
+            size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")
             if [[ "$size" -lt 1000000 ]]; then  # < 1MB is suspicious
               echo "❌ $f looks too small: $size bytes"
               exit 1
@@ -57,13 +81,64 @@ jobs:
             echo "✓ $f ($((size/1024/1024)) MB)"
           done
 
+      # Re-sign each .xcframework with the team's Apple Distribution identity
+      # before re-zipping. Upstream's realm-swift releases ship unsigned, but
+      # Apple's ITMS-91065 check now rejects TestFlight submissions that
+      # bundle unsigned third-party SDKs from the "commonly used" list (Realm
+      # is on that list — caught Lexicon 1.2.7 on 2026-05-27, MOB-290).
+      #
+      # We unzip → codesign → re-zip with the same asset name so consumers
+      # of `realm-binaries.json` only have to swap the URL/sha, not the
+      # filename. --force allows re-running over an already-signed bundle
+      # (workflow re-runs). --timestamp embeds Apple's TSA timestamp so the
+      # signature remains verifiable after the cert expires.
+      - name: Sign each xcframework and re-zip
+        env:
+          SIGNING_IDENTITY: ${{ secrets.SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          test -n "$SIGNING_IDENTITY" || { echo "❌ SIGNING_IDENTITY secret is required"; exit 1; }
+          echo "=== keychain state at sign time ==="
+          echo "--- default keychain:"; security default-keychain || true
+          echo "--- search list:"; security list-keychains -d user || true
+          echo "--- codesign identities (all keychains):"; security find-identity -v -p codesigning || true
+
+          mkdir -p assets
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          for zip in downloads/*.zip; do
+            name=$(basename "$zip")
+            echo ""
+            echo "🔏 Signing $name"
+            stage="$work/$name.unpack"
+            rm -rf "$stage" && mkdir -p "$stage"
+            unzip -q "$zip" -d "$stage"
+            # Each .spm.zip contains exactly one *.xcframework bundle at the
+            # archive root. Be explicit about that — fail loudly if upstream's
+            # shape ever changes.
+            xcframework=$(find "$stage" -maxdepth 2 -type d -name "*.xcframework" -print -quit)
+            if [[ -z "$xcframework" ]]; then
+              echo "❌ No *.xcframework found inside $name"; ls -la "$stage"; exit 1
+            fi
+            codesign --force --timestamp -vvvv --sign "$SIGNING_IDENTITY" "$xcframework"
+            codesign -dv "$xcframework" 2>&1 || true
+
+            # Re-zip with the same asset name so consumers swap URL+sha only.
+            ( cd "$(dirname "$xcframework")" && zip -qry "$GITHUB_WORKSPACE/assets/$name" "$(basename "$xcframework")" )
+            echo "✓ Re-zipped $name ($(stat -f%z "assets/$name" 2>/dev/null || stat -c%s "assets/$name") bytes)"
+          done
+
+          echo ""
+          echo "Signed assets:"
+          ls -la assets/
+
       - name: Compute checksums (for the release notes)
         id: shas
         run: |
           {
             echo "checksums<<EOF"
             for f in assets/*.zip; do
-              sha=$(sha256sum "$f" | awk '{print $1}')
+              sha=$(shasum -a 256 "$f" | awk '{print $1}')
               name=$(basename "$f")
               printf "  %s  %s\n" "$sha" "$name"
             done
@@ -76,27 +151,35 @@ jobs:
           VERSION: ${{ inputs.version }}
           CHECKSUMS: ${{ steps.shas.outputs.checksums }}
         run: |
+          notes_file="$RUNNER_TEMP/release-notes.md"
           {
-            echo "body<<NOTES_EOF"
-            echo "Defensive mirror of upstream [realm-swift v${VERSION}](https://github.com/realm/realm-swift/releases/tag/v${VERSION}) release assets. Bytes are identical — sha256 unchanged from upstream."
+            echo "Mirror of upstream [realm-swift v${VERSION}](https://github.com/realm/realm-swift/releases/tag/v${VERSION}), re-signed with the team's Apple Distribution identity (\`Apple Distribution: Cambly Inc.\`) so App Store Connect's ITMS-91065 \"Missing signature\" check passes. Verify with \`codesign -dv <Framework>.xcframework\`."
+            echo ""
+            echo "**Bytes differ from upstream** — the .xcframework bundles have an Apple Distribution signature embedded (_CodeSignature/ at the bundle root + per-slice signatures). Pair with the matching Cambly-built RealmSwift slice from the \`v${VERSION}-xcode<ver>\${tag_suffix}\` release."
             echo ""
             echo "Upstream URL pattern: github.com/realm/realm-swift/releases/download/v${VERSION}/&lt;asset&gt;"
-            echo "Mirror URL pattern:   github.com/Cambly/Cambly-Realm-Binary/releases/download/v${VERSION}/&lt;asset&gt;"
+            echo "Mirror URL pattern:   github.com/Cambly/Cambly-Realm-Binary/releases/download/v${VERSION}\${tag_suffix}/&lt;asset&gt;"
             echo ""
-            echo "### Mirrored assets (sha256)"
+            echo "### Signed assets (sha256)"
             echo ""
             echo "<pre>"
             echo "${CHECKSUMS}"
             echo "</pre>"
-            echo "NOTES_EOF"
-          } >> "$GITHUB_OUTPUT"
+          } > "$notes_file"
+          echo "notes_file=${notes_file}" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub release with mirrored assets
+      - name: Create GitHub release with signed assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v${{ inputs.version }}" \
-            assets/*.zip \
-            --repo "${{ github.repository }}" \
-            --title "v${{ inputs.version }}" \
-            --notes "${{ steps.notes.outputs.body }}"
+          set -euo pipefail
+          tag="v${{ inputs.version }}${{ inputs.tag_suffix }}"
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$tag" assets/*.zip \
+              --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$tag" assets/*.zip \
+              --repo "${{ github.repository }}" \
+              --title "$tag" \
+              --notes-file "${{ steps.notes.outputs.notes_file }}"
+          fi

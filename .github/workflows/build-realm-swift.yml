@@ -17,7 +17,14 @@ name: Build RealmSwift xcframework
 # release in this repo (tag shape vMAJOR.MINOR.PATCH, no suffix), so the
 # produced slice always pairs with an already-mirrored Realm.spm.zip of
 # the same upstream version. Run mirror-and-release.yml first if no such
-# release exists yet. The published tag is `v<realm>-xcode<xcode>`.
+# release exists yet. The published tag is
+# `v<realm>-xcode<xcode>${tag_suffix}` (e.g. `v20.0.4-xcode26.4.1-signed`).
+#
+# Output is signed with the team's Apple Distribution identity before
+# zipping (ITMS-91065 requirement — App Store Connect rejects TestFlight
+# submissions that bundle unsigned third-party SDKs from Apple's "commonly
+# used" list, which includes Realm). Required repo secrets:
+# MATCH_GIT_SSH_PRIVATE_KEY, MATCH_PASSWORD, SIGNING_IDENTITY.
 #
 # The Xcode version is auto-detected from the runner image's active
 # toolchain — we don't ask the caller for it. The macos-26 image ships
@@ -35,6 +42,12 @@ name: Build RealmSwift xcframework
 
 on:
   workflow_dispatch:
+    inputs:
+      tag_suffix:
+        description: "Optional suffix appended to the release tag, e.g. -signed or -r2. Used when republishing the same realm/Xcode combination (e.g. adding the Apple Distribution SDK signature). Leave empty for the first release of a given combination."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write  # create release + push tag
@@ -43,6 +56,21 @@ jobs:
   build:
     runs-on: macos-26
     steps:
+      - name: Checkout binary repo (this)
+        uses: actions/checkout@v4
+
+      # Set up everything required for codesigning the produced xcframework
+      # with the team's Apple Distribution identity. See
+      # .github/actions/setup-signing for details. The composite action sets
+      # MATCH_KEYCHAIN_NAME / MATCH_KEYCHAIN_PASSWORD via $GITHUB_ENV and makes
+      # fastlane_tmp_keychain the runner's default keychain, so the later
+      # codesign call finds the cert without further configuration.
+      - name: Set up signing
+        uses: ./.github/actions/setup-signing
+        with:
+          ssh-private-key: ${{ secrets.MATCH_GIT_SSH_PRIVATE_KEY }}
+          match-password: ${{ secrets.MATCH_PASSWORD }}
+
       - name: Resolve realm-swift version
         id: resolve
         env:
@@ -168,6 +196,33 @@ jobs:
           # readable prefix.
           strings "$mod" | grep -E "Apple Swift version" | head -n 3 || true
 
+      # Sign the .xcframework with the team's Apple Distribution identity
+      # before zipping. Apple requires a signature on RealmSwift (and other
+      # "commonly used third-party SDKs") under ITMS-91065 — TestFlight will
+      # reject the IPA without one. Signing the bundle as a whole (Apple's
+      # documented path; writes _CodeSignature/ at the bundle root + a
+      # per-slice signature) lets consumers verify origin with
+      # `codesign -dv RealmSwift.xcframework`.
+      #
+      # --force allows re-running over an already-signed bundle (workflow
+      # re-runs). --timestamp embeds a secure timestamp from Apple's TSA so
+      # the signature remains verifiable after the cert expires.
+      - name: Sign RealmSwift.xcframework
+        working-directory: src/build/Release
+        env:
+          SIGNING_IDENTITY: ${{ secrets.SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          test -n "$SIGNING_IDENTITY" || { echo "❌ SIGNING_IDENTITY secret is required"; exit 1; }
+          echo "=== keychain state at sign time ==="
+          echo "--- default keychain:"; security default-keychain || true
+          echo "--- search list:"; security list-keychains -d user || true
+          echo "--- codesign identities (all keychains):"; security find-identity -v -p codesigning || true
+          echo "🔏 Signing RealmSwift.xcframework with: $SIGNING_IDENTITY"
+          codesign --force --timestamp -vvvv --sign "$SIGNING_IDENTITY" RealmSwift.xcframework
+          echo "=== verification:"
+          codesign -dv RealmSwift.xcframework 2>&1 || true
+
       - name: Zip RealmSwift.xcframework as RealmSwift@<xcode>.spm.zip
         working-directory: src/build/Release
         run: |
@@ -221,6 +276,8 @@ jobs:
             echo ""
             echo "Built from upstream source against the Xcode ${XCODE_VER} GA toolchain — the .swiftmodule files inside the xcframework match the consumer's Swift compiler build, fixing the \"Compiled module was created by a different version of the compiler\" error that the upstream-prebuilt slice produces on GA toolchains."
             echo ""
+            echo "Signed with the team's Apple Distribution identity (\`Apple Distribution: Cambly Inc.\`) so the App Store Connect ITMS-91065 \"Missing signature\" check passes. Verify with \`codesign -dv RealmSwift.xcframework\`."
+            echo ""
             echo "**Bytes are NOT identical to upstream** (this is a rebuild, not a mirror). Pair with the upstream-mirrored \`Realm.spm.zip\` (ObjC core) from the matching upstream version — that one is unchanged across Xcode versions."
             echo ""
             echo "### Slice (sha256)"
@@ -236,7 +293,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="v${{ steps.resolve.outputs.realm_ver }}-xcode${{ steps.xcode.outputs.xcode_ver }}"
+          tag="v${{ steps.resolve.outputs.realm_ver }}-xcode${{ steps.xcode.outputs.xcode_ver }}${{ inputs.tag_suffix }}"
           if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             gh release upload "$tag" "$RUNNER_TEMP/assets"/*.zip \
               --repo "${{ github.repository }}" --clobber
