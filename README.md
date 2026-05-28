@@ -57,10 +57,28 @@ Both workflows pin the runner's Xcode via [`maxim-lobanov/setup-xcode`](https://
 
 | Workflow | Input | Default | Why |
 |---|---|---|---|
-| `build-realm-swift.yml` | `xcode_version` | `26.4.1` | Drives the produced slice's tag and asset name — slice ABI is keyed on the full Swift compiler build, which differs even between Xcode point releases. |
-| `mirror-and-release.yml` | `host_xcode_version` | `26.4.1` | Defense-in-depth so `codesign` + Command Line Tools behavior is reproducible across runs. Mirror doesn't compile anything, but CLT behavior can drift across Xcode versions. |
+| `build-realm-swift.yml` | `xcode_version` | `26.5` | Drives the produced slice's tag and asset name — slice ABI is keyed on the full Swift compiler build, which differs even between Xcode point releases. |
+| `mirror-and-release.yml` | `host_xcode_version` | `26.5` | Defense-in-depth so `codesign` + Command Line Tools behavior is reproducible across runs. Mirror doesn't compile anything, but CLT behavior can drift across Xcode versions. |
 
-When GitHub eventually removes a pinned version from the runner image, both workflows fail loudly with `Xcode <ver> not found at /Applications/Xcode_<ver>.app` — preferred to silently producing a different artifact. Check the [macos-26 runner-image readme](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md) for the current list of installed Xcodes, and bump the defaults when needed.
+When GitHub eventually removes a pinned version from the runner image, both workflows fail loudly with `Xcode <ver> not found at /Applications/Xcode_<ver>.app` — preferred to silently producing a different artifact.
+
+### Bumping the pin to a new Xcode
+
+`scripts/upgrade-xcode.sh` walks through the upgrade. It fetches the [runner-image readme](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md), validates the requested version is actually installed, and rewrites the YAML defaults in both workflows:
+
+```bash
+# Show current pin + which Xcodes are installed on macos-26 today:
+./scripts/upgrade-xcode.sh
+
+# Bump both pins to 26.5 (validates 26.5 is on the image first):
+./scripts/upgrade-xcode.sh --to 26.5
+
+# Force a bump even if the readme is stale (rare; only when you're sure
+# the image already has the version):
+./scripts/upgrade-xcode.sh --to 27.0 --skip-availability-check
+```
+
+After running, commit the YAML diff, open a PR, and once merged dispatch the workflows with the new `xcode_version` to produce signed releases keyed to the new toolchain. Then update `LocalPackages/RealmBinary/realm-binaries.json` in Cambly-Swift.
 
 ### Required secrets
 

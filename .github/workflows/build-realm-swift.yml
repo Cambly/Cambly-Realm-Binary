@@ -51,10 +51,10 @@ on:
   workflow_dispatch:
     inputs:
       xcode_version:
-        description: "Xcode version to build against (must be pre-installed on the macos-26 runner image). Drives the produced slice's tag and asset name. Default 26.4.1 matches Cambly-Swift's .xcode-version."
+        description: "Xcode version to build against (must be pre-installed on the macos-26 runner image). Drives the produced slice's tag and asset name. Default 26.5 is the latest GA available on macos-26; bump via scripts/upgrade-xcode.sh when a newer GA ships and the runner image picks it up."
         required: true
         type: string
-        default: "26.4.1"
+        default: "26.5"
       tag_suffix:
         description: "Optional suffix appended to the release tag, e.g. -signed or -r2. Used when republishing the same realm/Xcode combination (e.g. adding the Apple Distribution SDK signature). Leave empty for the first release of a given combination."
         required: false

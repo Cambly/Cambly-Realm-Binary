@@ -13,10 +13,10 @@ on:
         default: "26.1,26.2,26.3,26.4"
         type: string
       host_xcode_version:
-        description: "Xcode version selected on the runner via setup-xcode (drives codesign + CLT behavior). Pinned to avoid silent drift when GitHub bumps the macos-26 image's default Xcode. Default 26.4.1."
+        description: "Xcode version selected on the runner via setup-xcode (drives codesign + CLT behavior). Pinned to avoid silent drift when GitHub bumps the macos-26 image's default Xcode. Default 26.5 is the latest GA available on macos-26; bump via scripts/upgrade-xcode.sh."
         required: true
         type: string
-        default: "26.4.1"
+        default: "26.5"
       tag_suffix:
         description: "Optional suffix appended to each release tag, e.g. -signed or -r2. Used when republishing the same upstream version (e.g. adding the Apple Distribution SDK signature). Leave empty for the first release of a given upstream version."
         required: false
