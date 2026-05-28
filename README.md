@@ -9,19 +9,27 @@ Cambly-owned distribution of [realm-swift](https://github.com/realm/realm-swift)
 1. **Apple Distribution signature** — upstream ships unsigned xcframeworks. App Store Connect's ITMS-91065 check rejects any TestFlight submission that bundles an unsigned third-party SDK on Apple's "commonly used" list (Realm is on it). We re-sign each xcframework before publishing so consumer apps don't have to.
 2. **Defensive mirror** — if upstream deletes a release, changes a URL pattern, has a GitHub outage, or rate-limits Cambly traffic, Cambly devs and CI all break. A Cambly-owned URL is only ever changed by Cambly.
 
-## What's mirrored per release
+## Release layout — one tag per (realm-version, xcode-version) pair
 
-For each upstream `realm-swift` version (e.g. `v20.0.4`), we mirror:
+Each xcframework slice gets its own tagged release. This lets us re-roll a single Xcode toolchain (e.g. when a `26.4 → 26.4.1` bump invalidates the existing 26.4 slice) without disturbing the other slices' tags or shas.
 
-| Asset | Size | Purpose |
-|---|---:|---|
-| `Realm.spm.zip` | ~37 MB | Objective-C core (shared across all Xcode versions) |
-| `RealmSwift@26.1.spm.zip` | ~23 MB | Swift wrapper, Xcode 26.1 swiftmodule |
-| `RealmSwift@26.2.spm.zip` | ~23 MB | Swift wrapper, Xcode 26.2 swiftmodule |
-| `RealmSwift@26.3.spm.zip` | ~23 MB | Swift wrapper, Xcode 26.3 swiftmodule |
-| `RealmSwift@26.4.spm.zip` | ~23 MB | Swift wrapper, Xcode 26.4 swiftmodule |
+| Tag | Asset | Source | Purpose |
+|---|---|---|---|
+| `v<realm>` | `Realm.spm.zip` | upstream mirror, signed | Objective-C core (shared across all Xcode versions) |
+| `v<realm>-xcode<minor>` | `RealmSwift@<minor>.spm.zip` | upstream mirror, signed | Swift wrapper compiled against an Xcode RC toolchain (e.g. `26.4`) |
+| `v<realm>-xcode<minor>.<patch>` | `RealmSwift@<minor>.<patch>.spm.zip` | Cambly-built from source, signed | Swift wrapper compiled against a GA toolchain (e.g. `26.4.1`) — use when the RC-built slice errors with "Compiled module was created by a different version of the compiler" |
 
-Total ~129 MB per release. Cambly devs only download `Realm.spm.zip` (37 MB) + the `RealmSwift@<their-Xcode>.spm.zip` (23 MB) ≈ 60 MB per machine, sha-keyed cache.
+Example for realm-swift v20.0.4:
+- `v20.0.4` → `Realm.spm.zip`
+- `v20.0.4-xcode26.1` → `RealmSwift@26.1.spm.zip` (upstream mirror)
+- `v20.0.4-xcode26.2` → `RealmSwift@26.2.spm.zip` (upstream mirror)
+- `v20.0.4-xcode26.3` → `RealmSwift@26.3.spm.zip` (upstream mirror)
+- `v20.0.4-xcode26.4` → `RealmSwift@26.4.spm.zip` (upstream mirror)
+- `v20.0.4-xcode26.4.1` → `RealmSwift@26.4.1.spm.zip` (Cambly-built — produced by `build-realm-swift.yml`)
+
+Republishes that change the asset bytes (e.g. a new signing identity) append a suffix to the tag: `v20.0.4-xcode26.4.1-signed`.
+
+Cambly devs only download `Realm.spm.zip` (~37 MB) + the `RealmSwift@<their-Xcode>.spm.zip` (~23 MB) ≈ 60 MB per machine, sha-keyed cache.
 
 ## Mirroring a new Realm version
 
@@ -36,12 +44,12 @@ gh run watch --repo Cambly/Cambly-Realm-Binary
 ```
 
 The workflow:
-1. Downloads the 5 expected assets from `realm-swift` upstream
+1. Downloads the 5 expected assets from `realm-swift` upstream (1 ObjC core + 4 per-Xcode-version Swift slices)
 2. Verifies each is non-empty
 3. Unzips each `.spm.zip`, signs the enclosed `.xcframework` with the team's Apple Distribution identity (via fastlane match + the `setup-signing` composite action), and re-zips
-4. Publishes a Cambly release `vX.Y.Z<tag_suffix>` with the signed assets
+4. Publishes one GitHub release per slice — see the [release layout](#release-layout--one-tag-per-realm-version-xcode-version-pair) above. With `tag_suffix=-signed` the tags are `v20.0.5-signed`, `v20.0.5-xcode26.1-signed`, `v20.0.5-xcode26.2-signed`, etc.
 
-If `realm-swift` adds a new Xcode-version asset (e.g. `RealmSwift@26.5.spm.zip`), edit the workflow's asset list to include it.
+If `realm-swift` adds a new Xcode-version asset (e.g. `RealmSwift@26.5.spm.zip`), pass it via the `xcode_versions` input — no workflow edits required.
 
 ### Required secrets
 
@@ -57,15 +65,27 @@ These mirror the secrets used by `Cambly-iOS-Vendor-Binaries`.
 
 ## Then in Cambly-Swift
 
-Edit `LocalPackages/RealmBinary/realm-binaries.json` with the new URL **and** new sha256 (the signed zip has different bytes than upstream):
+Edit `LocalPackages/RealmBinary/realm-binaries.json` with the new URLs **and** new sha256s (the signed zip has different bytes than upstream). Each slice has its own per-Xcode-version tag:
 
 ```diff
  "realm_obj_c": {
--  "url": "https://github.com/realm/realm-swift/releases/download/v20.0.5/Realm.spm.zip",
+-  "url": "https://github.com/Cambly/Cambly-Realm-Binary/releases/download/v20.0.5/Realm.spm.zip",
 +  "url": "https://github.com/Cambly/Cambly-Realm-Binary/releases/download/v20.0.5-signed/Realm.spm.zip",
 -  "checksum": "<upstream sha>"
-+  "checksum": "<new sha from the workflow's release notes>"
++  "checksum": "<new sha from the v20.0.5-signed release notes>"
+ },
+ "realm_swift": {
+   "26.1": {
+-    "url": ".../v20.0.5/RealmSwift@26.1.spm.zip",
++    "url": ".../v20.0.5-xcode26.1-signed/RealmSwift@26.1.spm.zip",
+     ...
+   },
+   "26.4.1": {
+-    "url": ".../v20.0.5-xcode26.4.1/RealmSwift@26.4.1.spm.zip",
++    "url": ".../v20.0.5-xcode26.4.1-signed/RealmSwift@26.4.1.spm.zip",
+     ...
+   }
  }
 ```
 
-Sha values change after signing — pull the new ones from the workflow's release-notes section "Signed assets (sha256)".
+Sha values change after signing — pull the new ones from each per-Xcode-version release's "Slice (sha256)" section.
