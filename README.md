@@ -51,6 +51,31 @@ The workflow:
 
 If `realm-swift` adds a new Xcode-version asset (e.g. `RealmSwift@26.5.spm.zip`), pass it via the `xcode_versions` input — no workflow edits required.
 
+## Building a slice against your local Xcode
+
+`build-realm-swift.yml` runs on GitHub's `macos-NN` images, which lag behind Apple's Xcode GA releases by days or weeks. When you need a slice keyed to a newer Xcode immediately (e.g. you upgraded to Xcode 27.0 GA on your laptop and `macos-26` still has 26.4.1), use `scripts/build-realm-swift-local.sh`:
+
+```bash
+# Produce a signed zip locally (no upload):
+./scripts/build-realm-swift-local.sh
+
+# Build + publish as v20.0.4-xcode27.0-signed (or whatever your local Xcode is):
+./scripts/build-realm-swift-local.sh --tag-suffix -signed --upload
+
+# Override realm-swift version:
+./scripts/build-realm-swift-local.sh --realm-version 20.1.0 --tag-suffix -signed --upload
+
+# Help:
+./scripts/build-realm-swift-local.sh --help
+```
+
+The script mirrors `build-realm-swift.yml`'s logic — clones realm/realm-swift, builds the xcframework via upstream's `build.sh xcframework`, signs with your local Apple Distribution identity (auto-detected from keychain), zips, and prints a copy-pasteable JSON snippet for `realm-binaries.json`. Pass `--upload` to also create the GitHub release.
+
+Prerequisites:
+- The `Apple Distribution: Cambly Inc.` cert in your keychain (run fastlane match against `Cambly-Swift-Signing` if missing).
+- For `--upload`: `gh` authenticated against this repo.
+- Expect ~20 minutes wall-clock + ~10 GB disk (clone + DerivedData + platform SDKs).
+
 ### Required secrets
 
 Both workflows require these repo secrets (configure under Settings → Secrets and variables → Actions):

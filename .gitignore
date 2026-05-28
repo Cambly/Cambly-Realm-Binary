@@ -1,0 +1,4 @@
+# Local build output from scripts/build-realm-swift-local.sh — checked-out
+# realm-swift source, DerivedData, and produced .xcframework zips. Reproducible
+# on demand; never committed.
+build/
