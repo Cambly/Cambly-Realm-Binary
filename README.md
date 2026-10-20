@@ -53,7 +53,7 @@ If `realm-swift` adds a new Xcode-version asset (e.g. `RealmSwift@26.5.spm.zip`)
 
 ## Building a slice against your local Xcode
 
-`build-realm-swift.yml` runs on GitHub's `macos-NN` images, which lag behind Apple's Xcode GA releases by days or weeks. When you need a slice keyed to a newer Xcode immediately (e.g. you upgraded to Xcode 27.0 GA on your laptop and `macos-26` still has 26.4.1), use `scripts/build-realm-swift-local.sh`:
+`build-realm-swift.yml` runs on GitHub's `macos-NN` images (pass `runner=xcode-27` for an Xcode 27.x slice, since `macos-26` never gets Xcode 27), which lag behind Apple's Xcode GA releases by days or weeks. When you need a slice keyed to a newer Xcode immediately (e.g. you upgraded to Xcode 27.0 GA on your laptop and `macos-26` still has 26.4.1), use `scripts/build-realm-swift-local.sh`:
 
 ```bash
 # Build against the currently-active Xcode (auto-detected via xcodebuild -version):

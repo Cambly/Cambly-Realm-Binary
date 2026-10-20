@@ -30,8 +30,13 @@ name: Build RealmSwift xcframework
 # picks which toolchain to build against; setup-xcode then switches the
 # runner to that version and fails loudly if it isn't pre-installed on the
 # `runs-on` image. No default — every dispatch makes the choice explicit.
-# Runner-image installed-Xcode list:
+#
+# The runner image is an input too, because GitHub ships each Xcode major on
+# a different image: `macos-26` carries 26.0.1 through 26.6 and will never
+# get 27, while Xcode 27.x lives only on the `xcode-27` label (macOS 27
+# base). Pass `runner=xcode-27` for a 27.x slice. Installed-Xcode lists:
 # github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md
+# github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md
 #
 # .swiftmodule files don't link across Swift compiler builds, and Apple
 # bumps the compiler build between point releases (e.g. 26.4 GA ships
@@ -47,7 +52,7 @@ on:
   workflow_dispatch:
     inputs:
       xcode_version:
-        description: "Xcode version to build against (must be pre-installed on the macos-26 runner image). Drives the produced slice's tag and asset name. Use the exact string `xcodebuild -version` would emit (typically the Version column in the runner-image readme — \"26.5\" not \"26.5.0\"; \"26.4.1\" with patch)."
+        description: "Xcode version to build against (must be pre-installed on the chosen runner image). Drives the produced slice's tag and asset name. Use the exact string `xcodebuild -version` would emit (typically the Version column in the runner-image readme — \"26.5\" not \"26.5.0\"; \"26.4.1\" with patch)."
         required: true
         type: string
       tag_suffix:
@@ -55,13 +60,18 @@ on:
         required: false
         type: string
         default: ""
+      runner:
+        description: "GitHub-hosted runner label that has the requested Xcode installed: macos-26 for Xcode 26.x, xcode-27 for Xcode 27.x."
+        required: false
+        type: string
+        default: "macos-26"
 
 permissions:
   contents: write  # create release + push tag
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: ${{ inputs.runner }}
     steps:
       - name: Checkout binary repo (this)
         uses: actions/checkout@v4
